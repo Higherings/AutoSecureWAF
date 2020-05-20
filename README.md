@@ -41,7 +41,7 @@ https://higher-artifacts.s3.amazonaws.com/solutions/autoSecureWAF-template.yml
 
 #### Notes:
 
-- Lambda in Python 3.8, using **WAFv2 resources
+- Lambda in Python 3.8, using *WAFv2 resources*
 
 - Function uses the CIDR /24 of the offending IPs 
 
