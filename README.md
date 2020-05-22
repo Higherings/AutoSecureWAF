@@ -8,20 +8,20 @@ When lauching the CloudFormation template in us-east-1 it will automatically cre
 
 MANUALLY you can use the IPset created to make a Rule in a WebACL bloking those IPs. It also has a configurable duration of the block (in days) and a Max number of IPs to collect.
 
-If it's now working on your Region create an Issue and I will fix it.
+If it's not working on your Region create an Issue and I will fix it.
 
-> Version 1.0
+> Version 1.0.0
 
 ### Files:
-- autoSecureLogin-template.yml, CloudFormation template to Run in your account, it is already in a public S3 bucket
+- autoSecureWAF-template.yml, CloudFormation template to Run in your account, it is already in a public S3 bucket
 
-- autosecurelogin.py, Lambda code that actually do the job of creating the entries in the NACL, source code only for reviewing
+- autosecurewaf.py, Lambda code that actually do the job of creating the entries in the NACL, source code only for reviewing
 
-- autosecurelogin.zip, Zip file used by the template to deploy de Lambda, it is already in a public S3 Bucket
+- autosecurewaf.zip, Zip file used by the template to deploy de Lambda, it is already in a public S3 Bucket
 
-- autosecurelogin-cleaner.py, Lambda code that cleans up the expired entries , source code only for reviewing
+- autosecurewaf-cleaner.py, Lambda code that cleans up the expired entries , source code only for reviewing
 
-- autosecurelogin-cleaner.zip, Zip file used by the template to deploy de Lambda, it is already in a public S3 Bucket
+- autosecurewaf-cleaner.zip, Zip file used by the template to deploy de Lambda, it is already in a public S3 Bucket
 
 ## How To Deploy
 Use AWS CloudFormation to deploy the following template:
