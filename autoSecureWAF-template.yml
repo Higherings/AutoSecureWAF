@@ -1,0 +1,279 @@
+# igarcia 2020-05
+# Version 1.0.0
+# Automation to Secure WAFv2 (Web application Firewall)
+# Gets updates from GuardDuty (must be already configured) and blocks the CIDR /24 of attackers
+# This Template creates Lambda triggered by GuardDuty Findings and another Lambda scheduled for cleanup 
+# Resources to create: Two Lambdas, Two CloudWatch Events, IAM Role, DynamoDB Table
+# Resources to create:  One IPset for CloudFront and One IPset for ALB, it WILL NOT ceate the WebACLs or Rules to not incur in costs
+# The AWS Account should be already using GuardDuty
+# IMPORTANT: The block will occur using IPset, MANUALLY you must create a Rule referencing the IPset in a WebACL and set priority 1
+# AWS WAFv2
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template to automate security changes on WAFv2
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Stack Environment"
+        Parameters:
+          - TemplateAmbiente
+      -
+        Label:
+          default: "AutoSecureWAF Setup"
+        Parameters:
+          - pNumberIPs
+          - pDaysBlock
+    ParameterLabels: #Define Friendly Names
+      TemplateAmbiente:
+        default: "Value for CloudFormation Resources Env Tag"
+      pDaysBlock:
+        default: "Days blocked"
+      pNumberIPs:
+        default: "Max Number of IPs blocked"
+
+Parameters: #Default Parameters Values
+  TemplateAmbiente:
+    Type: String
+    Description: "Tag Env to set on CloudFormation resources"
+    Default: Test
+    MaxLength: 10
+    MinLength: 2
+    AllowedPattern: "[A-Za-z0-9]+"
+    ConstraintDescription: "Set a simple Tag between 2 and 10 characters long without spaces or special characters"
+  pDaysBlock:
+    Type: Number
+    Description: "How many days should remain the offending IPs BLOCKED"
+    Default: 30
+    MinValue: 1
+    MaxValue: 365
+    ConstraintDescription: "Please set a number between 1 and 365"
+  pNumberIPs:
+    Type: Number
+    Description: "Max number of IPs to keep record, will use CIDR/24 of offending IPs"
+    Default: 100
+    MinValue: 1
+    MaxValue: 1000
+    ConstraintDescription: "Please set a number between 1 and 1000, IPset limit is 10000"
+
+Conditions: # If in us-east-1 create IPset for CloudFront
+  CreateCloudFrontIPset: !Equals [!Ref "AWS::Region", 'us-east-1' ]
+
+Resources:
+
+  TemplateIPsetRegional:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Join [ "-", [ "AutoSecureWAF-IPset-Block-Regional", !Ref TemplateAmbiente ] ]
+      Description: !Join [ "-", [ "AutoSecureWAF-IPset-Block-Regional", !Ref TemplateAmbiente ] ]
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        - 127.0.0.1/32
+
+  TemplateIPsetGlobal:
+    Type: AWS::WAFv2::IPSet
+    Condition: CreateCloudFrontIPset
+    Properties:
+      Name: !Join [ "-", [ "AutoSecureWAF-IPset-Block-Global", !Ref TemplateAmbiente ] ]
+      Description: !Join [ "-", [ "AutoSecureWAF-IPset-Block-Global", !Ref TemplateAmbiente ] ]
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        - 127.0.0.1/32
+
+  TemplateRole: #Role for Lambda
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Description: Role to execute AutoSecureWAF
+      Policies: 
+        -
+          PolicyName: !Join [ "-", [ "PolicyLambdaExec", !Ref TemplateAmbiente ] ]
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+        -
+          PolicyName: !Join [ "-", [ "PolicyLambdaWAFv2", !Ref TemplateAmbiente ] ]
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "wafv2:DeleteIPSet"
+                  - "wafv2:GetIPSet"
+                  - "wafv2:ListIPSets"
+                  - "wafv2:CreateIPSet"
+                  - "wafv2:UpdateIPSet"
+                Resource: "*"
+        -
+          PolicyName: !Join [ "-", [ "PolicyLambdaDynamoDB", !Ref TemplateAmbiente ] ]
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action:
+                  - "dynamodb:BatchWriteItem"
+                  - "dynamodb:PutItem"
+                  - "dynamodb:DescribeTable"
+                  - "dynamodb:DeleteItem"
+                  - "dynamodb:GetItem"
+                  - "dynamodb:Scan"
+                  - "dynamodb:Query"
+                  - "dynamodb:UpdateItem"
+                  - "dynamodb:UpdateTable"
+                Resource: !Join [ "" , [ "arn:aws:dynamodb:*:*:table/", !Join [ "-", [ "AutoSecureWAFTable", !Ref TemplateAmbiente ] ] ] ]
+      RoleName: !Join [ "-", [ "RoleforAutoSecureWAF", !Ref TemplateAmbiente ] ]
+      Tags:
+        - Key: Env
+          Value: !Ref TemplateAmbiente
+ 
+  TemplateDynamoDBtable:  #Tabla para almacenar IPs de IPset
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        -
+          AttributeName: pk
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        -
+          AttributeName: pk
+          KeyType: HASH
+      TableName: !Join [ "-", [ "AutoSecureWAFTable", !Ref TemplateAmbiente ] ]
+      Tags:
+        -
+          Key: Env
+          Value: !Ref TemplateAmbiente
+
+  TemplateLambdaCleaner:  #Lambda to Clean Up IPset
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Join [ "-", [ "higher-artifacts", !Ref "AWS::Region" ] ]
+        S3Key: "solutions/autosecurewaf-cleaner.zip"
+      Description: Clean up teh IPsets after the block period
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref TemplateAmbiente
+          REGION: !Ref "AWS::Region"
+          BLOCKDAYS: !Ref pDaysBlock
+          IPSETIDR: !Ref TemplateIPsetRegional
+          IPSETIDG: !If [ CreateCloudFrontIPset , !Ref TemplateIPsetGlobal, !Ref "AWS::Region"]
+          DDBTABLE: !Join [ "-", [ "AutoSecureWAFTable", !Ref TemplateAmbiente ] ]
+      FunctionName: !Join [ "-", [ "AutoSecureWAFLambda-cleaner", !Ref TemplateAmbiente ] ]
+      Role: !GetAtt TemplateRole.Arn
+      Timeout: 800
+      Handler: autosecurewaf-cleaner.lambda_handler
+      Runtime: python3.8
+      MemorySize: 256
+      Tags:
+        -
+          Key: Env
+          Value: !Ref TemplateAmbiente
+
+  TemplateEventLambdaCleaner:  #Event to invoke Lambda Cleaner
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Invoke Lambda for AutoSecureWAF Clean Up
+      Name: !Join [ "-", [ "AutoSecureWAF-cleanerEvent", !Ref TemplateAmbiente ] ]
+      ScheduleExpression: "rate(1 day)"
+      State: ENABLED
+      Targets:
+        -
+          Arn: !GetAtt TemplateLambdaCleaner.Arn
+          Id: !Join [ "-", [!Ref TemplateAmbiente, "AutoSecureWAFLambda-cleaner" ] ]
+
+  TemplatePermisoEventLambdaCleaner: #Relaciona permisos del Event con Lambda Cleaner
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TemplateLambdaCleaner.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TemplateEventLambdaCleaner.Arn
+
+  TemplateLambda:  #Lambda to Modify IPset
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Join [ "-", [ "higher-artifacts", !Ref "AWS::Region" ] ]
+        S3Key: "solutions/autosecurewaf.zip"
+      Description: Updates IPsets with bad actors IPs from GuardDuty findings
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref TemplateAmbiente
+          REGION: !Ref "AWS::Region"
+          MAXIPS: !Ref pNumberIPs
+          IPSETIDR: !Ref TemplateIPsetRegional
+          IPSETIDG: !If [ CreateCloudFrontIPset , !Ref TemplateIPsetGlobal, !Ref "AWS::Region"]
+          DDBTABLE: !Join [ "-", [ "AutoSecureWAFTable", !Ref TemplateAmbiente ] ]
+      FunctionName: !Join [ "-", [ "AutoSecureWAFLambda", !Ref TemplateAmbiente ] ]
+      Role: !GetAtt TemplateRole.Arn
+      Timeout: 800
+      Handler: autosecurewaf.lambda_handler
+      Runtime: python3.8
+      MemorySize: 256
+      Tags:
+        -
+          Key: Env
+          Value: !Ref TemplateAmbiente
+
+  TemplateEventLambda:  #Event to invoke Lambda
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Invoke Lambda for AutoSecureWAF adding IPs to IPsets
+      Name: !Join [ "-", [ "AutoSecureWAFEvent", !Ref TemplateAmbiente ] ]
+      EventPattern: { "source": [ "aws.guardduty" ], "detail-type": [ "GuardDuty Finding" ], "detail": { "type": [ "Recon:EC2/PortProbeUnprotectedPort", "UnauthorizedAccess:EC2/SSHBruteForce", "UnauthorizedAccess:EC2/RDPBruteForce" ] } }
+      State: ENABLED
+      Targets:
+        -
+          Arn: !GetAtt TemplateLambda.Arn
+          Id: !Join [ "-", [!Ref TemplateAmbiente, "AutoSecureWAFLambda" ] ]
+
+  TemplatePermisoEventLambda: #Relaciona permisos del Event con Lambda
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TemplateLambda.Arn
+      Action: "lambda:InvokeFunction"
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt TemplateEventLambda.Arn
+
+Outputs: #Outputs of the Template
+  IPsettoUseRegional:
+    Description: IPset to use in Regional WebACL Rule
+    Value: !Ref TemplateIPsetRegional
+  IPsettoUseGlobal:
+    Description: IPset to use in Global WebACL Rule
+    Value: !If [ CreateCloudFrontIPset , !Ref TemplateIPsetGlobal, "To be created"]
+  IPsToKeep:
+    Description: Max number of offendings IPs (CIDR/24) to keep in IPset
+    Value: !Ref pNumberIPs
+  DaysBlocked:
+    Description: Number of days to keep the IPs in IPset
+    Value: !Ref pDaysBlock
+  Note:
+    Description: Note
+    Value: For regions outside us-east-1, the IPset for CloudFormation will be created after the first Finding or in 1 day
+  Remember:
+    Description: Manual Action
+    Value: Go and create a WebACL and a BLOCK Rule referencing the IPset, for CloudFormation see if IPset is already created or wait 24 hours to automatic creation
