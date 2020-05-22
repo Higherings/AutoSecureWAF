@@ -49,6 +49,16 @@ https://higher-artifacts.s3.amazonaws.com/solutions/autoSecureWAF-template.yml
 
 - If the MAX IPs is reached, the older one will be replace even if is not expired
 
+### Final Steps:
+- Remeber to create or update the WebACL with a Rule to BLOCK using the IPset
+<img src="images/step1.png" width="600">
+Reference the Global IPset or the Regional IPset
+<img src="images/step2.png" width="600">
+Set it with highest priority 
+<img src="images/step3.png" width="600">
+
+**That's all**
+
 ## To-Do
 - A better error management
 - Create the WebACL and/or the Rules to use the IPsets automatically
